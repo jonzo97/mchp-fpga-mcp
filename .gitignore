@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Tooling
+.mypy_cache/
+.pytest_cache/
+ruff_cache/
+
+# Data artifacts
+content/
+incoming/
+chroma/
+duckdb/
+manifest.db
+
+# OS/Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Windows alternate data streams copied via /mnt/c
+*:*Zone.Identifier
+*:*sec.endpointdlp

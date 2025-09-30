@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpga-rag"
+version = "0.1.0"
+description = "Local-first RAG stack for FPGA documentation"
+authors = [{name = "FPGA MCP Team"}]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic>=2.0",
+  "sqlmodel",
+  "sqlalchemy",
+  "alembic",
+  "httpx",
+  "python-multipart",
+  "watchfiles",
+  "tqdm",
+  "click",
+  "rich",
+  "numpy",
+  "pillow",
+  "pytorch-lightning; extra == 'gpu'",
+  "torch",
+  "transformers",
+  "sentence-transformers",
+  "chromadb",
+  "duckdb",
+  "jinja2"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "ruff",
+  "mypy",
+  "black",
+  "markdownlint-cli",
+  "pre-commit"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "B", "I"]
+
+[tool.black]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
