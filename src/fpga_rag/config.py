@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from pydantic import BaseSettings, Field
+
+try:
+    from pydantic_settings import BaseSettings
+    from pydantic import Field
+except ImportError:
+    from pydantic import BaseSettings, Field
 
 
 class Settings(BaseSettings):

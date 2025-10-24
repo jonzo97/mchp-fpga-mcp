@@ -33,3 +33,9 @@ manifest.db
 # Windows alternate data streams copied via /mnt/c
 *:*Zone.Identifier
 *:*sec.endpointdlp
+
+# Generated data
+content/
+manifest.db
+chroma/
+*.duckdb
