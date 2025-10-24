@@ -27,21 +27,51 @@ class ChromaDBVectorStore(_ChromaDBVectorStore):
     def add_documents(self, chunks, batch_size=100, show_progress=True):
         """Override to filter metadata before adding."""
         if not self.available or not chunks:
-            return super().add_documents(chunks, batch_size, show_progress)
+            return 0, 0
 
-        # Filter chunks to remove list/dict fields from metadata
-        filtered_chunks = []
+        # Prepare data manually with filtered metadata
+        ids = [f"{chunk.doc_id}_{chunk.slide_or_page}_{chunk.chunk_id}" for chunk in chunks]
+        texts = [chunk.text for chunk in chunks]
+
+        # Filter metadatas to remove lists/dicts
+        metadatas = []
         for chunk in chunks:
             chunk_dict = chunk.to_dict()
             # Remove fields that are lists or dicts (ChromaDB only accepts primitives)
             filtered_dict = {
                 k: v for k, v in chunk_dict.items()
-                if not isinstance(v, (list, dict))
+                if not isinstance(v, (list, dict)) and v is not None
             }
-            filtered_chunk = DocumentChunk(**filtered_dict)
-            filtered_chunks.append(filtered_chunk)
+            metadatas.append(filtered_dict)
 
-        return super().add_documents(filtered_chunks, batch_size, show_progress)
+        # Generate embeddings
+        from mchp_mcp_core.utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.info(f"Generating embeddings for {len(texts)} chunks...")
+        embeddings = self.embedder.embed(texts, show_progress=show_progress)
+
+        # Convert to list format
+        if hasattr(embeddings, 'tolist'):
+            embeddings_list = embeddings.tolist()
+        else:
+            embeddings_list = [list(e) for e in embeddings]
+
+        # Add to ChromaDB in batches
+        chunks_added = 0
+        for i in range(0, len(chunks), batch_size):
+            end_idx = min(i + batch_size, len(chunks))
+
+            self.collection.add(
+                ids=ids[i:end_idx],
+                embeddings=embeddings_list[i:end_idx],
+                documents=texts[i:end_idx],
+                metadatas=metadatas[i:end_idx]
+            )
+
+            chunks_added += (end_idx - i)
+
+        logger.info(f"Added {chunks_added} chunks to ChromaDB")
+        return chunks_added, 0
 
 console = Console()
 
