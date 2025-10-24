@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fpga-docs": {
+      "command": "/home/jorgill/fpga_mcp/mcp_server_launcher.sh",
+      "env": {}
+    }
+  }
+}
