@@ -5,7 +5,7 @@ import hashlib
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # Add mchp-mcp-core to path
 MCHP_CORE_PATH = Path.home() / "mchp-mcp-core"
@@ -13,12 +13,16 @@ if str(MCHP_CORE_PATH) not in sys.path:
     sys.path.insert(0, str(MCHP_CORE_PATH))
 
 from mchp_mcp_core.embeddings.sentence_transformers import EmbeddingModel
+from mchp_mcp_core.extractors.chunking import perform_intelligent_chunking
+from mchp_mcp_core.models.common import ExtractedChunk
 from mchp_mcp_core.storage.chromadb import ChromaDBVectorStore as _ChromaDBVectorStore
 from mchp_mcp_core.storage.schemas import DocumentChunk
 from rich.console import Console
 from rich.progress import track
 
 from fpga_rag.config import settings
+from fpga_rag.utils.text_cleaning import clean_document_pages
+from fpga_rag.utils.token_counter import count_tokens, estimate_tokens
 
 
 class ChromaDBVectorStore(_ChromaDBVectorStore):
@@ -119,61 +123,21 @@ class DocumentEmbedder:
         else:
             console.print("  [red]✗ ChromaDB not available - install with: pip install chromadb[/red]")
 
-    def _chunk_text_simple(self, text: str, chunk_size: int, overlap: int) -> List[str]:
-        """Simple fixed-size chunking with overlap.
-
-        Args:
-            text: Text to chunk
-            chunk_size: Target chunk size in characters
-            overlap: Overlap between chunks
-
-        Returns:
-            List of text chunks
-        """
-        if len(text) <= chunk_size:
-            return [text]
-
-        chunks = []
-        start = 0
-
-        while start < len(text):
-            end = start + chunk_size
-            chunk = text[start:end]
-
-            # Try to break at sentence boundary
-            if end < len(text):
-                # Look for last sentence boundary in chunk
-                for sep in ['. ', '.\n', '! ', '?\n']:
-                    last_sep = chunk.rfind(sep)
-                    if last_sep > chunk_size // 2:  # At least halfway through
-                        end = start + last_sep + len(sep)
-                        chunk = text[start:end]
-                        break
-
-            chunks.append(chunk.strip())
-            start = end - overlap if end < len(text) else end
-
-        return chunks
-
-    def _create_chunks_from_pages(
+    def _create_page_chunks(
         self,
         doc_id: str,
         version: str,
-        pages: List[tuple[int, str]],  # (page_num, text)
-        chunk_size: int = 1000,
-        overlap: int = 200
-    ) -> List[DocumentChunk]:
-        """Create DocumentChunks from page text using fixed-size chunking.
+        pages: List[Tuple[int, str]]  # (page_num, text)
+    ) -> List[ExtractedChunk]:
+        """Create ExtractedChunk objects from page text for semantic chunking.
 
         Args:
             doc_id: Document identifier
             version: Document version
             pages: List of (page_number, text) tuples
-            chunk_size: Target chunk size in characters
-            overlap: Overlap between chunks
 
         Returns:
-            List of DocumentChunk objects
+            List of ExtractedChunk objects (one per page initially)
         """
         chunks = []
 
@@ -181,37 +145,232 @@ class DocumentEmbedder:
             if not page_text.strip():
                 continue
 
-            # Chunk the page text
-            text_chunks = self._chunk_text_simple(page_text, chunk_size, overlap)
+            # Detect section hierarchy from page text (simple heuristic)
+            section_hierarchy = self._extract_section_hierarchy(page_text)
 
-            for chunk_id, chunk_text in enumerate(text_chunks):
-                # Compute hash for deduplication
-                content_hash = hashlib.sha256(chunk_text.encode()).hexdigest()
-
-                # Create DocumentChunk
-                chunk = DocumentChunk(
-                    doc_id=doc_id,
-                    title=doc_id,  # Use doc_id as title
-                    source_path=doc_id,
-                    updated_at=datetime.now().isoformat(),
-                    slide_or_page=page_num,
-                    chunk_id=chunk_id,
-                    text=chunk_text,
-                    sha256=content_hash,
-                    version=version,
-                    product_family="PolarFire"  # Default for now
-                )
-                chunks.append(chunk)
+            # Create ExtractedChunk for this page
+            chunk = ExtractedChunk(
+                chunk_id=f"{doc_id}_p{page_num}",
+                content=page_text,
+                page_start=page_num,
+                page_end=page_num,
+                chunk_type="text",
+                section_hierarchy=section_hierarchy,
+                metadata={
+                    "doc_id": doc_id,
+                    "version": version,
+                    "extraction_method": "pdftotext"
+                }
+            )
+            chunks.append(chunk)
 
         return chunks
+
+    def _extract_section_hierarchy(self, text: str) -> str:
+        """Extract section hierarchy from text (if present).
+
+        Args:
+            text: Page text
+
+        Returns:
+            Section hierarchy string (e.g., "1.2.3 Section Title") or empty string
+        """
+        import re
+
+        # Look for numbered sections in first few lines
+        lines = text.split('\n')[:10]
+        for line in lines:
+            line_clean = line.strip()
+            # Match patterns like "1.2.3 Section Title"
+            match = re.match(r'^(\d+(?:\.\d+)*)\s+(.+)$', line_clean)
+            if match and len(line_clean) < 80:
+                return line_clean
+        return ""
+
+    def _split_chunk_by_tokens(
+        self,
+        chunk: ExtractedChunk,
+        max_tokens: int,
+        overlap_tokens: int
+    ) -> List[ExtractedChunk]:
+        """Split a chunk that exceeds max_tokens at sentence boundaries.
+
+        Args:
+            chunk: Chunk to split
+            max_tokens: Maximum tokens per chunk
+            overlap_tokens: Overlap between split chunks
+
+        Returns:
+            List of split chunks (or original if within limit)
+        """
+        from fpga_rag.utils.token_counter import chunk_by_tokens
+
+        # Check if chunk needs splitting
+        current_tokens = count_tokens(chunk.content)
+        if current_tokens <= max_tokens:
+            return [chunk]
+
+        # Split using token-aware chunker
+        split_texts = chunk_by_tokens(
+            chunk.content,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens
+        )
+
+        # Create new chunks preserving metadata
+        split_chunks = []
+        for i, text in enumerate(split_texts):
+            new_chunk = ExtractedChunk(
+                chunk_id=f"{chunk.chunk_id}_split{i}",
+                content=text,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                chunk_type=chunk.chunk_type,
+                section_hierarchy=chunk.section_hierarchy,
+                metadata={
+                    **chunk.metadata,
+                    "split_from": chunk.chunk_id,
+                    "split_index": i
+                }
+            )
+            split_chunks.append(new_chunk)
+
+        return split_chunks
+
+    def _enforce_token_limits(
+        self,
+        chunks: List[ExtractedChunk],
+        max_tokens: int,
+        overlap_tokens: int
+    ) -> List[ExtractedChunk]:
+        """Enforce token limits by splitting oversized chunks.
+
+        Args:
+            chunks: Chunks from semantic chunking
+            max_tokens: Maximum tokens per chunk
+            overlap_tokens: Overlap for split chunks
+
+        Returns:
+            List of chunks with enforced token limits
+        """
+        enforced_chunks = []
+        oversized_count = 0
+
+        for chunk in chunks:
+            token_count = count_tokens(chunk.content)
+
+            if token_count > max_tokens:
+                oversized_count += 1
+                # Split this chunk
+                split_chunks = self._split_chunk_by_tokens(chunk, max_tokens, overlap_tokens)
+                enforced_chunks.extend(split_chunks)
+            else:
+                enforced_chunks.append(chunk)
+
+        if oversized_count > 0:
+            console.print(f"  [dim]Split {oversized_count} oversized chunks → {len(enforced_chunks)} total[/dim]")
+
+        return enforced_chunks
+
+    def _create_chunks_from_pages(
+        self,
+        doc_id: str,
+        version: str,
+        pages: List[Tuple[int, str]],  # (page_num, text)
+        max_tokens: int = 1500,
+        overlap_tokens: int = 150,
+        use_semantic: bool = True
+    ) -> List[DocumentChunk]:
+        """Create DocumentChunks using semantic chunking and token-based limits.
+
+        Args:
+            doc_id: Document identifier
+            version: Document version
+            pages: List of (page_number, text) tuples
+            max_tokens: Target chunk size in tokens (not characters!)
+            overlap_tokens: Overlap between chunks in tokens
+            use_semantic: Use semantic (section-aware) chunking
+
+        Returns:
+            List of DocumentChunk objects
+        """
+        console.print(f"  [dim]Token-based semantic chunking (max {max_tokens} tokens)...[/dim]")
+
+        # Step 1: Clean pages (remove headers/footers)
+        cleaned_pages = clean_document_pages(pages, aggressive=False, detect_repeats=True)
+        console.print(f"  [dim]Cleaned {len(pages)} pages → {len(cleaned_pages)} non-empty[/dim]")
+
+        # Step 2: Create ExtractedChunk objects for semantic chunking
+        extracted_chunks = self._create_page_chunks(doc_id, version, cleaned_pages)
+
+        # Step 3: Apply intelligent semantic chunking from mchp-mcp-core
+        # Convert token limits to approximate character limits (1 token ≈ 4 chars for English text)
+        # This is just a rough target; token limits will be enforced in Step 3.5
+        chunk_size_chars = int(max_tokens * 4)
+        overlap_chars = int(overlap_tokens * 4)
+
+        if use_semantic:
+            final_chunks = perform_intelligent_chunking(
+                extracted_chunks,
+                chunk_size=chunk_size_chars,
+                overlap=overlap_chars,
+                chunking_strategy="semantic",
+                min_chunk_size=chunk_size_chars // 3,
+                max_chunk_size=chunk_size_chars * 2
+            )
+        else:
+            final_chunks = perform_intelligent_chunking(
+                extracted_chunks,
+                chunk_size=chunk_size_chars,
+                overlap=overlap_chars,
+                chunking_strategy="fixed"
+            )
+
+        console.print(f"  [dim]Semantic chunking: {len(extracted_chunks)} pages → {len(final_chunks)} chunks[/dim]")
+
+        # Step 3.5: Enforce token limits by splitting oversized chunks
+        final_chunks = self._enforce_token_limits(final_chunks, max_tokens, overlap_tokens)
+
+        # Step 4: Convert ExtractedChunk to DocumentChunk for ChromaDB
+        document_chunks = []
+        for idx, chunk in enumerate(final_chunks):
+            # Compute hash for deduplication
+            content_hash = hashlib.sha256(chunk.content.encode()).hexdigest()
+
+            # Count actual tokens
+            token_count = count_tokens(chunk.content)
+
+            document_chunk = DocumentChunk(
+                doc_id=doc_id,
+                title=doc_id,
+                source_path=doc_id,
+                updated_at=datetime.now().isoformat(),
+                slide_or_page=chunk.page_start,
+                chunk_id=idx,
+                text=chunk.content,
+                sha256=content_hash,
+                version=version,
+                product_family="PolarFire",  # Default for now
+                section=chunk.section_hierarchy,  # Preserve section info!
+                metadata={
+                    **chunk.metadata,
+                    "page_end": chunk.page_end,
+                    "token_count": token_count,
+                    "chunking_strategy": chunk.metadata.get("chunking_strategy", "semantic")
+                }
+            )
+            document_chunks.append(document_chunk)
+
+        return document_chunks
 
     def index_document(
         self,
         doc_id: str,
         version: str,
         content_dir: Path,
-        chunk_size: int = 1000,
-        overlap: int = 200
+        max_tokens: int = 1500,
+        overlap_tokens: int = 150,
+        use_semantic: bool = True
     ) -> int:
         """Index a single document from its content directory.
 
@@ -219,8 +378,9 @@ class DocumentEmbedder:
             doc_id: Document identifier
             version: Document version
             content_dir: Path to content/{doc_id}/{version}
-            chunk_size: Target chunk size in characters
-            overlap: Overlap between chunks
+            max_tokens: Maximum tokens per chunk (default: 1500)
+            overlap_tokens: Overlap between chunks in tokens (default: 150)
+            use_semantic: Use semantic (section-aware) chunking
 
         Returns:
             Number of chunks indexed
@@ -242,8 +402,13 @@ class DocumentEmbedder:
             console.print(f"[yellow]  Warning: No pages found in {text_dir}[/yellow]")
             return 0
 
-        console.print(f"[cyan]  Creating chunks from {len(pages)} pages...[/cyan]")
-        chunks = self._create_chunks_from_pages(doc_id, version, pages, chunk_size, overlap)
+        console.print(f"[cyan]  Processing {len(pages)} pages...[/cyan]")
+        chunks = self._create_chunks_from_pages(
+            doc_id, version, pages,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+            use_semantic=use_semantic
+        )
         console.print(f"  [green]✓ Created {len(chunks)} chunks[/green]")
 
         if not self.vector_store.is_available():
@@ -260,15 +425,17 @@ class DocumentEmbedder:
     def index_all_documents(
         self,
         content_root: Optional[Path] = None,
-        chunk_size: int = 1000,
-        overlap: int = 200
+        max_tokens: int = 1500,
+        overlap_tokens: int = 150,
+        use_semantic: bool = True
     ) -> int:
         """Index all documents in the content directory.
 
         Args:
             content_root: Root content directory (default: from settings)
-            chunk_size: Target chunk size in characters
-            overlap: Overlap between chunks
+            max_tokens: Maximum tokens per chunk (default: 1500)
+            overlap_tokens: Overlap between chunks in tokens (default: 150)
+            use_semantic: Use semantic (section-aware) chunking
 
         Returns:
             Total chunks indexed
@@ -296,12 +463,17 @@ class DocumentEmbedder:
             console.print("[yellow]No documents found to index[/yellow]")
             return 0
 
-        console.print(f"\n[bold cyan]Indexing {len(doc_dirs)} documents...[/bold cyan]\n")
+        console.print(f"\n[bold cyan]Indexing {len(doc_dirs)} documents with semantic chunking (max {max_tokens} tokens)...[/bold cyan]\n")
 
         total_chunks = 0
         for doc_id, version, content_dir in track(doc_dirs, description="Indexing documents"):
             console.print(f"\n[bold]{doc_id} ({version})[/bold]")
-            chunks = self.index_document(doc_id, version, content_dir, chunk_size, overlap)
+            chunks = self.index_document(
+                doc_id, version, content_dir,
+                max_tokens=max_tokens,
+                overlap_tokens=overlap_tokens,
+                use_semantic=use_semantic
+            )
             total_chunks += chunks
 
         console.print(f"\n[bold green]✓ Indexed {total_chunks} total chunks from {len(doc_dirs)} documents[/bold green]")

@@ -33,16 +33,38 @@ def main() -> None:
         console.print("[red]✗ ChromaDB not available. Install with: pip install chromadb[/red]")
         return
 
-    # Step 2: Index all documents
-    console.print("\n[yellow]Step 2: Indexing documents...[/yellow]")
-    total_chunks = embedder.index_all_documents(chunk_size=800, overlap=150)
+    # Step 2: Clear old collection for fresh test
+    console.print("\n[yellow]Step 2: Clearing old collection...[/yellow]")
+    try:
+        # Delete all documents (need to provide where clause or get all IDs)
+        embedder.vector_store.collection.delete(where={})
+        console.print("  [green]✓ Old collection cleared[/green]")
+    except Exception as e:
+        console.print(f"  [yellow]Warning: Could not clear collection: {e}[/yellow]")
+        console.print(f"  [yellow]Attempting to delete collection and recreate...[/yellow]")
+        try:
+            embedder.vector_store.client.delete_collection(embedder.vector_store.collection_name)
+            embedder.vector_store.collection = embedder.vector_store.client.get_or_create_collection(
+                name=embedder.vector_store.collection_name
+            )
+            console.print("  [green]✓ Collection recreated[/green]")
+        except Exception as e2:
+            console.print(f"  [red]✗ Could not recreate: {e2}[/red]")
+
+    # Step 3: Index all documents with NEW optimized chunking
+    console.print("\n[yellow]Step 3: Indexing documents with semantic chunking...[/yellow]")
+    total_chunks = embedder.index_all_documents(
+        max_tokens=400,  # Safe limit (model max is 512, leave margin for special tokens)
+        overlap_tokens=60,  # 15% overlap (NVIDIA optimal for technical docs)
+        use_semantic=True  # Use semantic section-aware chunking
+    )
 
     if total_chunks == 0:
         console.print("[red]No documents indexed[/red]")
         return
 
-    # Step 3: Test search
-    console.print("\n[yellow]Step 3: Testing search...[/yellow]\n")
+    # Step 4: Test search
+    console.print("\n[yellow]Step 4: Testing search...[/yellow]\n")
 
     # Import search modules
     from mchp_mcp_core.storage.schemas import SearchQuery
