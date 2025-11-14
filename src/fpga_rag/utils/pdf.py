@@ -1,11 +1,18 @@
-"""PDF metadata and extraction helpers."""
+"""PDF metadata and extraction helpers.
+
+Now uses mchp-mcp-core for enhanced extraction (tables, structure awareness).
+Maintains backward compatibility with existing ExtractionWorker API.
+"""
 from __future__ import annotations
 
 import re
-import subprocess
+import subprocess  # Still used by get_pdf_page_count() for lightweight metadata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from mchp_mcp_core.extractors import PDFExtractor as CorePDFExtractor
+from mchp_mcp_core.models import ExtractedChunk
 
 
 @dataclass
@@ -85,7 +92,12 @@ def get_pdf_metadata(path: Path) -> PDFMetadata:
 
 
 def extract_pdf_text_pages(pdf_path: Path, output_dir: Path) -> list[PDFPageText]:
-    """Extract text from PDF page-by-page using pdftotext.
+    """Extract text from PDF page-by-page using mchp-mcp-core.
+
+    Now uses mchp-mcp-core's CorePDFExtractor for enhanced extraction including:
+    - Multi-strategy table extraction (3-way consensus)
+    - Structure-aware chunking (section hierarchy)
+    - Specification extraction (electrical parameters)
 
     Args:
         pdf_path: Path to PDF file
@@ -95,52 +107,59 @@ def extract_pdf_text_pages(pdf_path: Path, output_dir: Path) -> list[PDFPageText
         List of PDFPageText objects with extracted text
 
     Note:
-        This processes pages individually to avoid memory issues with large PDFs.
-        Page text is also saved to {output_dir}/page_{N:04d}.txt for persistence.
+        This maintains backward compatibility with the original API.
+        Page text is saved to {output_dir}/page_{N:04d}.txt for persistence.
+        Tables are included inline in the text content.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize mchp-mcp-core extractor
+    extractor = CorePDFExtractor(config={
+        'chunk_size': 10000,  # Large chunks to preserve page boundaries
+        'overlap': 0,
+        'preserve_sections': True,
+        'extract_images': False,
+        'chunking_strategy': 'fixed',
+        'min_chunk_size': 100,
+        'max_chunk_size': 20000,
+    })
+
+    # Extract using core infrastructure
+    doc_id, _ = parse_doc_id(pdf_path)
+    chunks = extractor.extract_document(str(pdf_path), document_id=doc_id)
+
+    # Group chunks by page number
+    pages_dict: dict[int, list[str]] = {}
+    for chunk in chunks:
+        page_num = chunk.page_start  # ExtractedChunk uses 1-indexed pages
+
+        if page_num not in pages_dict:
+            pages_dict[page_num] = []
+
+        # Add chunk content
+        if chunk.chunk_type == "text":
+            pages_dict[page_num].append(chunk.content)
+        elif chunk.chunk_type == "table":
+            # Table content is already formatted as markdown by mchp-mcp-core
+            # Include it with clear markers for downstream processing
+            caption = chunk.metadata.get("caption", f"Table {chunk.metadata.get('table_index', '')}")
+            pages_dict[page_num].append(f"\n[TABLE: {caption}]\n{chunk.content}\n[/TABLE]\n")
+
+    # Convert to PDFPageText format and save individual files
     pages: list[PDFPageText] = []
+    for page_num in sorted(pages_dict.keys()):
+        # Combine all content for this page
+        text = "\n\n".join(pages_dict[page_num])
+        char_count = len(text)
 
-    page_count = get_pdf_page_count(pdf_path)
-    if not page_count:
-        # Fallback: extract all text at once
-        try:
-            result = subprocess.run(
-                ["pdftotext", "-layout", str(pdf_path), "-"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            text = result.stdout
-            pages.append(PDFPageText(page_number=1, text=text, char_count=len(text)))
-        except subprocess.CalledProcessError:
-            pass
-        return pages
-
-    # Extract page-by-page
-    for page_num in range(1, page_count + 1):
+        # Save to individual page file (maintain compatibility)
         page_file = output_dir / f"page_{page_num:04d}.txt"
+        page_file.write_text(text, encoding="utf-8")
 
-        try:
-            # Extract single page
-            result = subprocess.run(
-                ["pdftotext", "-layout", "-f", str(page_num), "-l", str(page_num),
-                 str(pdf_path), str(page_file)],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            # Read extracted text
-            if page_file.exists():
-                text = page_file.read_text(encoding="utf-8", errors="ignore")
-                pages.append(PDFPageText(
-                    page_number=page_num,
-                    text=text,
-                    char_count=len(text)
-                ))
-        except subprocess.CalledProcessError:
-            # Create empty entry for failed pages
-            pages.append(PDFPageText(page_number=page_num, text="", char_count=0))
+        pages.append(PDFPageText(
+            page_number=page_num,
+            text=text,
+            char_count=char_count
+        ))
 
     return pages

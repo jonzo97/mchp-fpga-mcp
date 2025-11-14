@@ -31,7 +31,8 @@ dependencies = [
   "sentence-transformers",
   "chromadb",
   "duckdb",
-  "jinja2"
+  "jinja2",
+  "mchp-mcp-core>=0.1.7"  # Shared PDF/table extraction infrastructure
 ]
 
 [project.optional-dependencies]

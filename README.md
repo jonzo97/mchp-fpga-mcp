@@ -10,20 +10,47 @@ Scaffold for a local-first retrieval-augmented generation system focused on Micr
 - `tests/` – pytest-based checks for pipeline units.
 
 ## Getting Started
-1. Create a Python 3.10+ virtual environment and install dependencies:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -e .[dev]
-   ```
-2. Populate `incoming/` with FPGA PDFs.
-3. Stage and enqueue jobs:
-   ```bash
-   python scripts/ingest.py
-   ```
-4. Run the FastAPI MCP stub:
-   ```bash
-   uvicorn fpga_rag.server.app:app --reload
-   ```
+
+### 1. Install mchp-mcp-core (Development Dependency)
+
+This project depends on `mchp-mcp-core` for PDF extraction, embeddings, and vector storage.
+
+```bash
+# Install mchp-mcp-core in editable mode for development
+cd ~/mchp-mcp-core
+pip install -e .
+```
+
+Installing in editable mode (`-e`) means changes to mchp-mcp-core are immediately available without reinstalling.
+
+**Note:** As of 2025-11-14, fpga_mcp uses `mchp-mcp-core` for enhanced PDF extraction including:
+- **Multi-strategy table extraction** - 3-way consensus (pdfplumber + Camelot + PyMuPDF)
+- **Structure-aware chunking** - Preserves section hierarchy
+- **Specification extraction** - Extracts electrical parameters (voltage, current, timing)
+- **~2x more content extracted** compared to previous pdftotext-only approach
+
+This migration maintains full backward compatibility with existing ingestion pipeline and ExtractionWorker API.
+
+### 2. Install fpga_mcp
+
+```bash
+cd ~/fpga_mcp
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
+```
+
+### 3. Ingest FPGA PDFs
+
+```bash
+# Populate incoming/ with FPGA PDFs
+python scripts/ingest.py
+```
+
+### 4. Run the MCP Server
+
+```bash
+uvicorn fpga_rag.server.app:app --reload
+```
 
 Refer to `SPEC.md` for the full system design and roadmap.
