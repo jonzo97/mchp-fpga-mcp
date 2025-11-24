@@ -36,7 +36,8 @@ When the user asks to generate TCL scripts or FPGA designs:
 ```python
 # Import the search tools directly
 import sys
-sys.path.insert(0, "/home/jorgill/fpga_mcp/src")
+from pathlib import Path
+sys.path.insert(0, str(Path.home() / "fpga_mcp" / "src"))
 from fpga_rag.indexing import DocumentEmbedder
 from mchp_mcp_core.storage.schemas import SearchQuery
 
@@ -166,10 +167,10 @@ python src/fpga_rag/mcp_server/server.py
   "mcpServers": {
     "fpga-docs": {
       "command": "python",
-      "args": ["/home/jorgill/fpga_mcp/src/fpga_rag/mcp_server/server.py"],
+      "args": ["~/fpga_mcp/src/fpga_rag/mcp_server/server.py"],
       "env": {
-        "FPGA_RAG_CHROMA_PATH": "/home/jorgill/fpga_mcp/chroma",
-        "FPGA_RAG_CONTENT_DIR": "/home/jorgill/fpga_mcp/content"
+        "FPGA_RAG_CHROMA_PATH": "~/fpga_mcp/chroma",
+        "FPGA_RAG_CONTENT_DIR": "~/fpga_mcp/content"
       }
     }
   }

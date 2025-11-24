@@ -518,7 +518,8 @@ proc generate_timing_constraints {design_config} {
 """DDR4 configuration generator with documentation validation."""
 
 import sys
-sys.path.insert(0, "/home/jorgill/fpga_mcp/src")
+from pathlib import Path
+sys.path.insert(0, str(Path.home() / "fpga_mcp" / "src"))
 
 from fpga_rag.indexing import DocumentEmbedder
 from mchp_mcp_core.storage.schemas import SearchQuery
@@ -785,7 +786,7 @@ python scripts/test_indexing.py
 ### Feedback
 
 Report issues or suggest improvements:
-- File: `/home/jorgill/fpga_mcp/docs/IMPROVEMENTS_ROADMAP.md`
+- File: `~/fpga_mcp/docs/IMPROVEMENTS_ROADMAP.md`
 - Update Phase 2 section with findings
 
 ---

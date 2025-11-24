@@ -235,7 +235,7 @@
       "generators": ["DDR4", "PCIe", "CCC", "UART", "GPIO"]
     },
     "mchp_mcp_core": {
-      "location": "/home/jorgill/mchp-mcp-core",
+      "location": "~/mchp-mcp-core",
       "version": "0.1.6",
       "provides": ["EmbeddingModel", "ChromaDBVectorStore", "SearchQuery", "DocumentChunk"]
     },

@@ -39,3 +39,16 @@ content/
 manifest.db
 chroma/
 *.duckdb
+
+# PDFs - too large for git, download via scripts/download_pdfs.py
+pdfs/*.pdf
+!pdfs/README.md
+
+# Session snapshots (local state)
+.claude_sessions/
+pdfs/.claude_sessions/
+pdfs/PROJECT_STATE.json
+
+# Local configuration
+.claude/settings.local.json
+claude_desktop_config.json
