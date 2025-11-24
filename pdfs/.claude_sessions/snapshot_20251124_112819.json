@@ -1,0 +1,10 @@
+{
+  "session_id": "20251124_112819",
+  "timestamp": "2025-11-24T19:28:19Z",
+  "project_state_backup": "PROJECT_STATE.json",
+  "git_commit": "90af4f5b4a68dd0ef5977875ad9417feb0df1642",
+  "working_directory": "/home/jorgill/fpga_mcp/pdfs",
+  "files_modified": "",
+  "files_created": "pdfs/Libero_TCL_Commands_Reference_Guide_2024.2.pdf,pdfs/PROJECT_STATE.json,pdfs/PolarFire_PDC_Commands_User_Guide_2022.2.pdf,pdfs/PolarFire_Safety_Critical_AC478.pdf,pdfs/RT_PolarFire_TMR_Spatial_Separation_AN.pdf,pdfs/SmartDesign_User_Guide_2024.2.pdf,pdfs/SmartTime_STA_User_Guide_2024.1.pdf,pdfs/Synplify_Pro_Attribute_Reference_2021.03SP1.pdf,pdfs/Synplify_Pro_Command_Reference_2023.09.pdf,pdfs/Synplify_Pro_User_Guide_2021.03SP1.pdf,pdfs/Timing_Constraints_Editor_User_Guide_2024.2.pdf",
+  "notes": "Pre-compact snapshot for context restoration"
+}
