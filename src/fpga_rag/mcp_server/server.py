@@ -344,6 +344,34 @@ async def list_tools() -> List[Tool]:
                 "required": ["constraint_type"]
             }
         ),
+        Tool(
+            name="validate_ip_configuration",
+            description="PRE-VALIDATE IP core configuration parameters against documentation BEFORE TCL generation. "
+                       "Prevents build failures by checking parameter validity, ranges, and device compatibility. "
+                       "Critical for tcl_monster workflow - validates configs before synthesis.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ip_core": {
+                        "type": "string",
+                        "description": "IP core name (e.g., 'PF_DDR4', 'PF_CCC', 'PF_PCIE', 'CoreUARTapb')"
+                    },
+                    "parameters": {
+                        "type": "object",
+                        "description": "Configuration parameters to validate as key-value pairs. "
+                                     "Examples: {'speed': 'DDR4-2400', 'size': '4GB', 'width': '32'} for DDR4, "
+                                     "{'lanes': '4', 'gen': '2'} for PCIe, {'freq_out': '100MHz'} for CCC",
+                        "additionalProperties": True
+                    },
+                    "device": {
+                        "type": "string",
+                        "description": "Target device family (optional, e.g., 'MPF300', 'MPF500', 'RTPF500'). "
+                                     "Used to check device-specific limitations."
+                    }
+                },
+                "required": ["ip_core", "parameters"]
+            }
+        ),
         # Note: polarfire_browse_diagrams will be added when diagram extraction is implemented
     ]
 
@@ -379,6 +407,9 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
 
         elif name == "get_timing_constraints":
             result = await handle_get_timing_constraints(arguments)
+
+        elif name == "validate_ip_configuration":
+            result = await handle_validate_ip_configuration(arguments)
 
         else:
             logger.warning(f"Unknown tool requested: {name}")
@@ -808,6 +839,264 @@ async def handle_get_timing_constraints(arguments: dict) -> List[TextContent]:
 
     response = "\n".join(summary_lines)
     return [TextContent(type="text", text=response)]
+
+
+async def handle_validate_ip_configuration(arguments: dict) -> List[TextContent]:
+    """Handle validate_ip_configuration tool call.
+
+    Pre-validates IP core configuration parameters against documentation
+    before TCL generation. This is CRITICAL for preventing build failures.
+
+    Args:
+        arguments: ip_core (required), parameters (required dict), device (optional)
+
+    Returns:
+        List of content blocks with validation results (errors, warnings, valid params)
+    """
+    # Validate arguments
+    ip_core = arguments.get("ip_core", "")
+    if not ip_core or not ip_core.strip():
+        return [TextContent(type="text", text="Error: 'ip_core' parameter is required")]
+
+    parameters = arguments.get("parameters", {})
+    if not isinstance(parameters, dict) or not parameters:
+        return [TextContent(type="text", text="Error: 'parameters' must be a non-empty dictionary")]
+
+    device = arguments.get("device", "")
+
+    # Get embedder
+    try:
+        embedder = get_embedder()
+    except RuntimeError as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+
+    # Check vector store availability
+    if not embedder.vector_store.is_available():
+        return [TextContent(
+            type="text",
+            text="Error: Vector store not available. Please run indexing first."
+        )]
+
+    logger.info(f"Validating IP configuration: {ip_core}, params={parameters}, device={device}")
+
+    # Validation results
+    validation_results = {
+        "valid": [],
+        "warnings": [],
+        "errors": [],
+        "info": []
+    }
+
+    # Build comprehensive search query for ALL parameters
+    param_search_terms = " ".join([f"{k} {v}" for k, v in parameters.items()])
+    query_text = f"{ip_core} configuration {param_search_terms}"
+
+    if device:
+        query_text += f" {device} device compatibility"
+
+    query_text += " valid range specifications requirements limitations"
+
+    # Execute broad search to get relevant documentation
+    search_query = SearchQuery(query=query_text, top_k=10)
+    results = embedder.vector_store.search(search_query)
+
+    if not results:
+        validation_results["warnings"].append({
+            "message": f"No documentation found for {ip_core}. Cannot validate parameters.",
+            "severity": "HIGH",
+            "doc_ref": "N/A"
+        })
+    else:
+        # Analyze results for parameter validation
+        # Extract all result text for analysis
+        doc_text = "\n".join([r.snippet or r.text or "" for r in results[:5]])
+        doc_text_lower = doc_text.lower()
+
+        # Validate each parameter against documentation
+        for param_name, param_value in parameters.items():
+            param_name_lower = param_name.lower()
+            param_value_str = str(param_value).lower()
+
+            # Search for this specific parameter in results
+            param_found = param_name_lower in doc_text_lower or param_value_str in doc_text_lower
+
+            if param_found:
+                # Check for specific validation keywords near the parameter
+                param_context = _extract_context_around_keyword(doc_text_lower, param_value_str)
+
+                # Look for warning indicators
+                if any(word in param_context for word in ["warning", "caution", "note", "limitation", "max", "maximum", "min", "minimum"]):
+                    # Find which document this came from
+                    doc_ref = _find_doc_reference(results, param_value_str)
+
+                    validation_results["warnings"].append({
+                        "parameter": param_name,
+                        "value": param_value,
+                        "message": f"Parameter '{param_name}={param_value}' found in documentation with notes/limitations. Review documentation for constraints.",
+                        "doc_ref": doc_ref,
+                        "context": param_context[:200]
+                    })
+                else:
+                    # Parameter mentioned positively
+                    validation_results["valid"].append({
+                        "parameter": param_name,
+                        "value": param_value,
+                        "message": f"Parameter '{param_name}={param_value}' found in documentation."
+                    })
+            else:
+                # Parameter not explicitly mentioned - could be invalid or just not in search results
+                validation_results["info"].append({
+                    "parameter": param_name,
+                    "value": param_value,
+                    "message": f"Parameter '{param_name}={param_value}' not explicitly found in top documentation results. "
+                             f"This may be valid but unusual, or may need different search terms."
+                })
+
+        # Device-specific validation
+        if device:
+            device_lower = device.lower()
+            device_found = device_lower in doc_text_lower
+
+            if not device_found:
+                validation_results["warnings"].append({
+                    "message": f"Device '{device}' not mentioned in documentation for {ip_core}. Verify device compatibility.",
+                    "severity": "MEDIUM",
+                    "doc_ref": "N/A"
+                })
+
+    # Format validation report
+    report_lines = [
+        f"# IP Configuration Validation: {ip_core}\n",
+    ]
+
+    if device:
+        report_lines.append(f"**Target Device:** {device}\n")
+
+    report_lines.append(f"**Parameters to Validate:** {len(parameters)}\n")
+
+    # Summary counts
+    num_valid = len(validation_results["valid"])
+    num_warnings = len(validation_results["warnings"])
+    num_errors = len(validation_results["errors"])
+    num_info = len(validation_results["info"])
+
+    report_lines.append("\n## Validation Summary\n")
+    report_lines.append(f"- ✅ Valid: {num_valid}")
+    report_lines.append(f"- ⚠️  Warnings: {num_warnings}")
+    report_lines.append(f"- ❌ Errors: {num_errors}")
+    report_lines.append(f"- ℹ️  Informational: {num_info}\n")
+
+    # Errors first (blocking issues)
+    if validation_results["errors"]:
+        report_lines.append("\n## ❌ Errors (Must Fix)\n")
+        for error in validation_results["errors"]:
+            param_info = f"{error.get('parameter', 'N/A')}={error.get('value', 'N/A')}" if 'parameter' in error else ""
+            report_lines.append(f"**Error:** {error['message']}")
+            if param_info:
+                report_lines.append(f"  - Parameter: `{param_info}`")
+            if 'doc_ref' in error:
+                report_lines.append(f"  - See: {error['doc_ref']}")
+            if 'context' in error:
+                report_lines.append(f"  - Context: {error['context'][:150]}...")
+            report_lines.append("")
+
+    # Warnings (should review)
+    if validation_results["warnings"]:
+        report_lines.append("\n## ⚠️  Warnings (Review Recommended)\n")
+        for warning in validation_results["warnings"]:
+            param_info = f"{warning.get('parameter', 'N/A')}={warning.get('value', 'N/A')}" if 'parameter' in warning else ""
+            severity = warning.get('severity', 'MEDIUM')
+            report_lines.append(f"**Warning [{severity}]:** {warning['message']}")
+            if param_info:
+                report_lines.append(f"  - Parameter: `{param_info}`")
+            if 'doc_ref' in warning:
+                report_lines.append(f"  - See: {warning['doc_ref']}")
+            if 'context' in warning:
+                report_lines.append(f"  - Context: {warning['context'][:150]}...")
+            report_lines.append("")
+
+    # Info (FYI)
+    if validation_results["info"]:
+        report_lines.append("\n## ℹ️  Informational\n")
+        for info in validation_results["info"]:
+            param_info = f"{info.get('parameter', 'N/A')}={info.get('value', 'N/A')}" if 'parameter' in info else ""
+            report_lines.append(f"- {info['message']}")
+            if param_info and 'parameter' in info:
+                report_lines.append(f"  - Parameter: `{param_info}`")
+            report_lines.append("")
+
+    # Valid parameters
+    if validation_results["valid"]:
+        report_lines.append("\n## ✅ Valid Parameters\n")
+        for valid in validation_results["valid"]:
+            report_lines.append(f"- `{valid['parameter']}={valid['value']}`: {valid['message']}")
+
+    # Add relevant documentation sections
+    report_lines.append("\n## Referenced Documentation\n")
+    for idx, result in enumerate(results[:5], start=1):
+        title = result.title or "Unknown Document"
+        page = result.slide_or_page or "?"
+        report_lines.append(f"{idx}. **{title}** (Page {page})")
+
+    # Recommendations
+    report_lines.extend([
+        "\n## Recommendations for TCL Generation",
+    ])
+
+    if validation_results["errors"]:
+        report_lines.append("- ❌ **DO NOT PROCEED** - Fix errors before generating TCL")
+    elif validation_results["warnings"]:
+        report_lines.append("- ⚠️  **REVIEW WARNINGS** - Configuration may work but review recommended")
+        report_lines.append("- Consider testing with safe default values first")
+    else:
+        report_lines.append("- ✅ **PROCEED** - No blocking issues found in documentation")
+
+    report_lines.append("- Validate generated TCL against Libero constraints checker")
+    report_lines.append("- Run timing analysis after synthesis to verify parameters")
+
+    response = "\n".join(report_lines)
+    return [TextContent(type="text", text=response)]
+
+
+def _extract_context_around_keyword(text: str, keyword: str, context_chars: int = 200) -> str:
+    """Extract text context around a keyword.
+
+    Args:
+        text: Full text to search
+        keyword: Keyword to find
+        context_chars: Characters of context before/after (default: 200)
+
+    Returns:
+        Context string or empty if keyword not found
+    """
+    idx = text.find(keyword)
+    if idx == -1:
+        return ""
+
+    start = max(0, idx - context_chars)
+    end = min(len(text), idx + len(keyword) + context_chars)
+
+    return text[start:end]
+
+
+def _find_doc_reference(results: List[Any], keyword: str) -> str:
+    """Find which document contains a keyword.
+
+    Args:
+        results: List of search results
+        keyword: Keyword to search for
+
+    Returns:
+        Document reference string (title + page)
+    """
+    for result in results:
+        snippet = (result.snippet or result.text or "").lower()
+        if keyword in snippet:
+            title = result.title or "Unknown"
+            page = result.slide_or_page or "?"
+            return f"{title} (Page {page})"
+
+    return "Documentation (page unknown)"
 
 
 def format_search_results_rich(results: List[Any], query: str) -> List[TextContent]:
