@@ -1,14 +1,14 @@
 {
-  "last_updated": "2025-10-28T16:45:00",
+  "last_updated": "2025-11-24T21:14:40Z",
   "project_name": "FPGA Documentation RAG System",
   "current_phase": "Phase 2 Complete - tcl_monster Integration",
   "recent_accomplishments": [
     "Completed Phase 1: Foundation & Production Patterns (3-4 hours of work in ~2 hours)",
-    "Ported production MCP server from Windows repo (532 lines → 810 lines)",
+    "Ported production MCP server from Windows repo (532 lines \u2192 810 lines)",
     "Created ChromaDB adapter with dual-mode support (persistent + HTTP)",
     "Completed Phase 2: tcl_monster Integration tools (3 specialized tools)",
     "Created comprehensive documentation (34KB total: roadmap + integration guide)",
-    "Added 20 new PDFs from Windows repo (7 → 27 documents total)"
+    "Added 20 new PDFs from Windows repo (7 \u2192 27 documents total)"
   ],
   "active_files": [
     {
@@ -96,7 +96,7 @@
       "changes": [
         "Changed from 'NOT for Claude Desktop' to 'Supports both modes'",
         "Added MCP server usage examples",
-        "Updated document count (7 → 27 PDFs)",
+        "Updated document count (7 \u2192 27 PDFs)",
         "Added tcl_monster integration examples",
         "Added architecture & performance sections"
       ]
@@ -156,7 +156,11 @@
   "mcp_server_tools": {
     "search_fpga_docs": {
       "purpose": "General semantic search with rich content",
-      "parameters": ["query", "top_k", "document_type"],
+      "parameters": [
+        "query",
+        "top_k",
+        "document_type"
+      ],
       "status": "production-ready"
     },
     "get_fpga_doc_info": {
@@ -167,21 +171,47 @@
     },
     "query_ip_parameters": {
       "purpose": "Query IP core parameters for TCL generation (tcl_monster)",
-      "parameters": ["ip_core", "parameter", "top_k"],
+      "parameters": [
+        "ip_core",
+        "parameter",
+        "top_k"
+      ],
       "status": "production-ready",
-      "examples": ["PF_DDR4", "PF_CCC", "PF_PCIE", "CoreUARTapb"]
+      "examples": [
+        "PF_DDR4",
+        "PF_CCC",
+        "PF_PCIE",
+        "CoreUARTapb"
+      ]
     },
     "explain_error": {
       "purpose": "Resolve Libero error messages with documentation (tcl_monster)",
-      "parameters": ["error_message", "context", "top_k"],
+      "parameters": [
+        "error_message",
+        "context",
+        "top_k"
+      ],
       "status": "production-ready",
-      "use_cases": ["timing errors", "resource constraints", "CDC violations"]
+      "use_cases": [
+        "timing errors",
+        "resource constraints",
+        "CDC violations"
+      ]
     },
     "get_timing_constraints": {
       "purpose": "Find SDC/PDC timing constraint examples (tcl_monster)",
-      "parameters": ["constraint_type", "ip_or_interface", "top_k"],
+      "parameters": [
+        "constraint_type",
+        "ip_or_interface",
+        "top_k"
+      ],
       "status": "production-ready",
-      "examples": ["clock definition", "input delay", "false path", "multi-cycle"]
+      "examples": [
+        "clock definition",
+        "input delay",
+        "false path",
+        "multi-cycle"
+      ]
     }
   },
   "documentation_status": {
@@ -232,18 +262,29 @@
       "location": "/mnt/c/tcl_monster",
       "purpose": "Libero FPGA automation toolkit",
       "integration_ready": true,
-      "generators": ["DDR4", "PCIe", "CCC", "UART", "GPIO"]
+      "generators": [
+        "DDR4",
+        "PCIe",
+        "CCC",
+        "UART",
+        "GPIO"
+      ]
     },
     "mchp_mcp_core": {
       "location": "~/mchp-mcp-core",
       "version": "0.1.6",
-      "provides": ["EmbeddingModel", "ChromaDBVectorStore", "SearchQuery", "DocumentChunk"]
+      "provides": [
+        "EmbeddingModel",
+        "ChromaDBVectorStore",
+        "SearchQuery",
+        "DocumentChunk"
+      ]
     },
     "windows_production": {
       "location": "/mnt/c/fpga_mcp",
       "status": "reference implementation",
       "lessons_learned": [
-        "3-tier architecture (MCP → FastAPI → DB)",
+        "3-tier architecture (MCP \u2192 FastAPI \u2192 DB)",
         "Rich content formatting patterns",
         "Automatic fallback mechanisms",
         "Smart resource limiting"
