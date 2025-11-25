@@ -372,6 +372,27 @@ async def list_tools() -> List[Tool]:
                 "required": ["ip_core", "parameters"]
             }
         ),
+        Tool(
+            name="get_ip_dependencies",
+            description="Identify required IP cores, clocks, interfaces, and pin requirements for a given IP. "
+                       "Prevents incomplete system designs by documenting all dependencies BEFORE implementation. "
+                       "Critical for system planning in tcl_monster workflows.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ip_core": {
+                        "type": "string",
+                        "description": "Primary IP core to analyze (e.g., 'PF_DDR4', 'PF_PCIE', 'MI-V', 'CoreUARTapb')"
+                    },
+                    "use_case": {
+                        "type": "string",
+                        "description": "Optional use case context (e.g., 'processor system', 'data acquisition', 'PCIe endpoint'). "
+                                     "Helps find relevant integration examples."
+                    }
+                },
+                "required": ["ip_core"]
+            }
+        ),
         # Note: polarfire_browse_diagrams will be added when diagram extraction is implemented
     ]
 
@@ -410,6 +431,9 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
 
         elif name == "validate_ip_configuration":
             result = await handle_validate_ip_configuration(arguments)
+
+        elif name == "get_ip_dependencies":
+            result = await handle_get_ip_dependencies(arguments)
 
         else:
             logger.warning(f"Unknown tool requested: {name}")
@@ -1097,6 +1121,220 @@ def _find_doc_reference(results: List[Any], keyword: str) -> str:
             return f"{title} (Page {page})"
 
     return "Documentation (page unknown)"
+
+
+async def handle_get_ip_dependencies(arguments: dict) -> List[TextContent]:
+    """Handle get_ip_dependencies tool call.
+
+    Identifies required IP cores, clocks, interfaces, and constraints for a given IP.
+    Critical for system planning to prevent incomplete designs.
+
+    Args:
+        arguments: ip_core (required), use_case (optional)
+
+    Returns:
+        List of content blocks with dependency information
+    """
+    # Validate arguments
+    ip_core = arguments.get("ip_core", "")
+    if not ip_core or not ip_core.strip():
+        return [TextContent(type="text", text="Error: 'ip_core' parameter is required")]
+
+    use_case = arguments.get("use_case", "")
+
+    # Get embedder
+    try:
+        embedder = get_embedder()
+    except RuntimeError as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+
+    # Check vector store availability
+    if not embedder.vector_store.is_available():
+        return [TextContent(
+            type="text",
+            text="Error: Vector store not available. Please run indexing first."
+        )]
+
+    logger.info(f"Analyzing dependencies for: {ip_core}, use_case={use_case}")
+
+    # Build search queries for different dependency types
+    queries = {
+        "required_ips": f"{ip_core} required IP cores companion modules dependencies integration",
+        "clocks": f"{ip_core} clock requirements frequency CCC PLL clock domains",
+        "interfaces": f"{ip_core} interface AXI APB AMBA bus connections data path",
+        "pins": f"{ip_core} pin count I/O requirements package pinout",
+        "constraints": f"{ip_core} timing constraints SDC PDC requirements"
+    }
+
+    if use_case:
+        for key in queries:
+            queries[key] += f" {use_case}"
+
+    # Execute searches for each dependency type
+    dependency_info = {}
+    for dep_type, query_text in queries.items():
+        search_query = SearchQuery(query=query_text, top_k=5)
+        results = embedder.vector_store.search(search_query)
+        dependency_info[dep_type] = results
+
+    # Analyze results to extract structured information
+    report_lines = [
+        f"# IP Dependencies Analysis: {ip_core}\n",
+    ]
+
+    if use_case:
+        report_lines.append(f"**Use Case:** {use_case}\n")
+
+    report_lines.append("This analysis identifies required components, clocks, interfaces, and constraints.\n")
+    report_lines.append("---\n")
+
+    # Required IP Cores
+    report_lines.append("\n## Required / Companion IP Cores\n")
+    required_results = dependency_info.get("required_ips", [])
+    if required_results:
+        # Extract mentions of other IP cores from results
+        doc_text = "\n".join([r.snippet or r.text or "" for r in required_results[:3]])
+        doc_text_lower = doc_text.lower()
+
+        # Common IP dependencies
+        common_deps = {
+            "CCC": ["ccc", "clock conditioning", "pll"],
+            "Interconnect": ["axi interconnect", "ahb", "apb bridge", "fabric"],
+            "DMA": ["dma", "direct memory access"],
+            "Reset": ["reset controller", "sysreset"],
+            "MI-V": ["mi-v", "risc-v", "processor"]
+        }
+
+        found_deps = []
+        for dep_name, keywords in common_deps.items():
+            if any(kw in doc_text_lower for kw in keywords):
+                found_deps.append(dep_name)
+
+        if found_deps:
+            report_lines.append(f"**Identified Dependencies:**\n")
+            for dep in found_deps:
+                report_lines.append(f"- {dep}")
+            report_lines.append("")
+
+        report_lines.append("\n**Documentation References:**\n")
+        for idx, result in enumerate(required_results[:3], start=1):
+            title = result.title or "Unknown Document"
+            page = result.slide_or_page or "?"
+            snippet = result.snippet or result.text or ""
+            report_lines.append(f"{idx}. **{title}** (Page {page})")
+            if snippet:
+                snippet_short = snippet[:200] + "..." if len(snippet) > 200 else snippet
+                report_lines.append(f"   > {snippet_short}\n")
+    else:
+        report_lines.append("*No specific dependency information found. Check documentation manually.*\n")
+
+    # Clock Requirements
+    report_lines.append("\n## Clock Requirements\n")
+    clock_results = dependency_info.get("clocks", [])
+    if clock_results:
+        report_lines.append("**Clock Information Found:**\n")
+        for idx, result in enumerate(clock_results[:3], start=1):
+            title = result.title or "Unknown Document"
+            page = result.slide_or_page or "?"
+            snippet = result.snippet or result.text or ""
+
+            report_lines.append(f"{idx}. **{title}** (Page {page})")
+            if snippet:
+                # Look for frequency mentions
+                import re
+                freq_mentions = re.findall(r'\d+\s*[MG]Hz', snippet, re.IGNORECASE)
+                if freq_mentions:
+                    report_lines.append(f"   - Frequencies mentioned: {', '.join(freq_mentions[:5])}")
+
+                snippet_short = snippet[:200] + "..." if len(snippet) > 200 else snippet
+                report_lines.append(f"   > {snippet_short}\n")
+    else:
+        report_lines.append("*Check IP core documentation for clock requirements.*\n")
+
+    # Interface Requirements
+    report_lines.append("\n## Interface Requirements\n")
+    interface_results = dependency_info.get("interfaces", [])
+    if interface_results:
+        doc_text = "\n".join([r.snippet or r.text or "" for r in interface_results[:3]])
+        doc_text_lower = doc_text.lower()
+
+        # Detect interface types
+        interfaces_found = []
+        if "axi" in doc_text_lower or "axi4" in doc_text_lower:
+            interfaces_found.append("AXI4 (Advanced eXtensible Interface)")
+        if "apb" in doc_text_lower:
+            interfaces_found.append("APB (Advanced Peripheral Bus)")
+        if "ahb" in doc_text_lower:
+            interfaces_found.append("AHB (Advanced High-performance Bus)")
+        if "fabric" in doc_text_lower:
+            interfaces_found.append("FPGA Fabric")
+
+        if interfaces_found:
+            report_lines.append("**Interfaces Detected:**\n")
+            for iface in interfaces_found:
+                report_lines.append(f"- {iface}")
+            report_lines.append("")
+
+        report_lines.append("\n**Documentation References:**\n")
+        for idx, result in enumerate(interface_results[:2], start=1):
+            title = result.title or "Unknown Document"
+            page = result.slide_or_page or "?"
+            report_lines.append(f"{idx}. {title} (Page {page})")
+    else:
+        report_lines.append("*Review IP core documentation for interface specifications.*\n")
+
+    # Pin Requirements
+    report_lines.append("\n## Pin Requirements\n")
+    pin_results = dependency_info.get("pins", [])
+    if pin_results:
+        doc_text = "\n".join([r.snippet or r.text or "" for r in pin_results[:2]])
+
+        # Try to extract pin counts
+        import re
+        pin_numbers = re.findall(r'(\d+)\s*pins?', doc_text, re.IGNORECASE)
+        if pin_numbers:
+            report_lines.append(f"**Pin Counts Mentioned:** {', '.join(pin_numbers[:5])} pins\n")
+
+        report_lines.append("**Documentation References:**\n")
+        for idx, result in enumerate(pin_results[:2], start=1):
+            title = result.title or "Unknown Document"
+            page = result.slide_or_page or "?"
+            report_lines.append(f"{idx}. {title} (Page {page})")
+    else:
+        report_lines.append("*Check board design guide for pin requirements.*\n")
+
+    # Constraint Requirements
+    report_lines.append("\n## Timing Constraints Requirements\n")
+    constraint_results = dependency_info.get("constraints", [])
+    if constraint_results:
+        report_lines.append("**Constraint Documentation Found:**\n")
+        for idx, result in enumerate(constraint_results[:2], start=1):
+            title = result.title or "Unknown Document"
+            page = result.slide_or_page or "?"
+            report_lines.append(f"{idx}. {title} (Page {page})")
+        report_lines.append("\n*Use `get_timing_constraints` tool for specific constraint examples.*\n")
+    else:
+        report_lines.append("*Timing constraints may be required. Check documentation.*\n")
+
+    # System Integration Recommendations
+    report_lines.extend([
+        "\n## System Integration Checklist\n",
+        "Use this checklist when integrating this IP into your design:\n",
+        "- [ ] Verify all required companion IP cores are included",
+        "- [ ] Configure clock sources (add PF_CCC if needed)",
+        "- [ ] Connect interfaces (AXI/APB interconnects)",
+        "- [ ] Allocate sufficient pins (check device package)",
+        "- [ ] Add timing constraints (SDC/PDC files)",
+        "- [ ] Verify device compatibility and resources",
+        "\n## Next Steps for tcl_monster Integration\n",
+        "1. Use `query_ip_parameters` to get configuration options for each IP",
+        "2. Use `validate_ip_configuration` to pre-check parameters",
+        "3. Generate TCL scripts for all required components",
+        "4. Use `get_timing_constraints` to create constraint files",
+    ])
+
+    response = "\n".join(report_lines)
+    return [TextContent(type="text", text=response)]
 
 
 def format_search_results_rich(results: List[Any], query: str) -> List[TextContent]:
